@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LTC Collections Process Map — Workflow Orchestration Spec</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔄</text></svg>" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; background: #0a0e17; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: translateX(0); } }
+    ::-webkit-scrollbar { height: 6px; width: 6px; }
+    ::-webkit-scrollbar-track { background: rgba(15,23,42,0.3); }
+    ::-webkit-scrollbar-thumb { background: rgba(99,179,237,0.2); border-radius: 3px; }
+    .node-hover:hover { transform: scale(1.06) !important; }
+    .card-hover:hover { border-color: rgba(99,179,237,0.4) !important; background: rgba(99,179,237,0.04) !important; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useCallback } = React;
+
+    const LIFECYCLE_STAGES = [
+      { id: "LS-01", label: "NEW /\nQUEUED", shortLabel: "New / Queued", day: "Day 0", color: "#2D9CDB",
+        description: "Account appears on workable report with AR >60 days. Not yet worked this cycle.",
+        entryTrigger: "Workable report refresh", exitCriteria: "Coordinator claims account and begins research",
+        systems: ["Shared Drive", "Excel"], tasks: ["Queue auto-prioritized by aging + balance"],
+        fields: ["Customer ID", "Total AR", "Aging bucket", "Corporation"] },
+      { id: "LS-02", label: "RESEARCH", shortLabel: "Research", day: "", color: "#2D9CDB",
+        description: "Coordinator reviews customer master demographics, LTC facility tab, contacts, insurance tab, billing system open invoices, and account notes history. Exports invoices from invoice retrieval system.",
+        entryTrigger: "Coordinator claims account", exitCriteria: "Research complete, outreach initiated",
+        systems: ["Customer Master", "Billing System", "Invoice Retrieval"],
+        tasks: ["TT-RESEARCH: Pull demographics, contacts, invoice history, prior notes"],
+        fields: ["Facility type", "Billing method", "Primary contact", "Open invoices", "Prior activity history"] },
+      { id: "LS-03", label: "INITIAL\nOUTREACH", shortLabel: "Initial Outreach", day: "Day 0", color: "#27AE60",
+        description: "First collection attempt: call + email with attached invoices and AR statement. Follow initial contact call script.",
+        entryTrigger: "Research complete", exitCriteria: "Customer responds OR 15 days elapse with no response",
+        systems: ["Phone", "Email Client", "Billing System"],
+        tasks: ["TT-CALL_OUTBOUND (initial script)", "TT-EMAIL_COLLECTION (invoices attached)"],
+        fields: ["Contact name/title", "Call outcome", "Email sent to", "Invoices attached", "Total AR discussed"] },
+      { id: "LS-04", label: "DELINQ 1\n(15-DAY)", shortLabel: "Delinquency 1 (15-Day)", day: "Day 15", color: "#F2C94C",
+        description: "No response after 15 days. Send Delinquency Letter #1 + invoices + outstanding balance summary. Call facility \u2014 ask for Administrator, Executive Director, Business Office Manager, or Director of Nursing.",
+        entryTrigger: "15 days no response (auto-escalation)", exitCriteria: "Customer responds OR 30 days total elapse",
+        systems: ["Email Client", "Phone", "Billing System", "Shared Drive"],
+        tasks: ["TT-EMAIL_NOTICE (Delinquency Letter #1)", "TT-CALL_OUTBOUND (15-day script)"],
+        fields: ["Delinquency letter sent to", "Call contact (Admin/ED/BOM/DON)", "OBS attached", "Response received Y/N"] },
+      { id: "LS-05", label: "DELINQ 2\n(30-DAY)", shortLabel: "Delinquency 2 (30-Day)", day: "Day 30", color: "#F2994A",
+        description: "No response after 30 days total. Send Delinquency Letter #2 + invoices + AR report. Follow 30-day call script.",
+        entryTrigger: "30 days no response (auto-escalation)", exitCriteria: "Customer responds OR 45 days total elapse",
+        systems: ["Email Client", "Phone", "Billing System", "Shared Drive"],
+        tasks: ["TT-EMAIL_NOTICE (Delinquency Letter #2)", "TT-CALL_OUTBOUND (30-day script)"],
+        fields: ["2nd delinquency letter sent", "AR report attached", "Supervisor alerted"] },
+      { id: "LS-06", label: "SUPERVISOR\nESCALATION", shortLabel: "Supervisor Escalation", day: "Day 45", color: "#EB5757",
+        description: "Account escalated to Supervisor for final collections attempt. Supervisor contacts customer via email or phone. Follow 45-day call script.",
+        entryTrigger: "45 days no response (auto-escalation)", exitCriteria: "Supervisor resolves OR escalates to Operations",
+        systems: ["Phone", "Email Client", "Billing System"],
+        tasks: ["TT-CALL_OUTBOUND (45-day script, Supervisor)", "TT-EMAIL_COLLECTION (Supervisor)"],
+        fields: ["Supervisor assigned", "Supervisor contact attempt", "Outcome", "Handoff notes from Coordinator"] },
+      { id: "LS-07", label: "OPS\nESCALATION", shortLabel: "Ops Escalation", day: "Day 45+", color: "#C0392B",
+        description: "Operations makes 1 attempt to contact. Sends delinquency letters, invoices, outstanding balance summary. Customer has 1 week to respond.",
+        entryTrigger: "Supervisor escalation fails", exitCriteria: "Customer responds OR 1 week elapses",
+        systems: ["Phone", "Email Client", "Billing System"],
+        tasks: ["TT-CALL_OUTBOUND (Ops)", "TT-EMAIL_NOTICE (final notice)"],
+        fields: ["Ops Manager assigned", "Contact attempt result", "1-week deadline set"] },
+      { id: "LS-08", label: "SUSPENSION", shortLabel: "Suspension", day: "Day 52+", color: "#8E44AD",
+        description: "Services suspended, account inactivated. Facility has 14 days to pay in full OR pay 30% + written payment plan.",
+        entryTrigger: "Ops escalation fails", exitCriteria: "Payment/plan received OR 14 days elapse",
+        systems: ["Billing System", "Email Client", "BI/Reporting"],
+        tasks: ["TT-ACCOUNT_SUSPENDED", "TT-EMAIL_NOTICE (Suspension Notice)"],
+        fields: ["Total AR on suspension notice", "Corporate contact", "Cure deadline (14 days)", "Required: full payment OR 30% + plan"] },
+      { id: "LS-09", label: "TERMI-\nNATION", shortLabel: "Termination", day: "Day 90+", color: "#2C3E50",
+        description: "Regional Ops Manager approves contract termination and equipment pickup. AR adjusted to stop aging.",
+        entryTrigger: "Suspension cure period expires", exitCriteria: "Equipment picked up, account closed",
+        systems: ["Billing System", "Customer Master"],
+        tasks: ["TT-ACCOUNT_TERMINATED", "Equipment pickup scheduling", "AR adjustment to freeze aging"],
+        fields: ["Regional Ops Manager approval", "Pickup date scheduled", "Final AR balance", "Aging freeze keyed"] },
+      { id: "LS-10", label: "RESOLVED", shortLabel: "Resolved", day: "", color: "#1ABC9C",
+        description: "Payment received in full, or payment plan active and current. Account exits active collections.",
+        entryTrigger: "Payment or plan at any stage", exitCriteria: "Account removed from active queue",
+        systems: ["Billing System", "Payment Gateway"],
+        tasks: ["TT-PAYMENT_RECEIVED", "Account closed or moved to monitoring"],
+        fields: ["Payment amount", "Payment method", "Invoices cleared", "Remaining balance (if plan)"] }
+    ];
+
+    const PARALLEL_WORKFLOWS = [
+      { id: "PW-01", label: "Correction Processing", color: "#6C5CE7",
+        trigger: "Customer reports billing discrepancy (email/phone/fax)",
+        steps: ["Receive correction request \u2014 review discharge dates, quantities, pricing, insurance","Check account notes for prior requests on same issue","Gather supporting docs (face sheet, pickup ticket, census)","Submit to LTC Billing department via corrections inbox","Track 3\u20135 business day SLA \u2014 auto-follow-up if breached","Receive resolution \u2192 update account \u2192 notify customer"],
+        impact: "May pause collection escalation. Creates credits on resolution.", sla: "3\u20135 business days" },
+      { id: "PW-02", label: "Credit Resolution (Standard)", color: "#00B894",
+        trigger: "Credit appears on credit report from adjustments, overpayments, or recoupments",
+        steps: ["Identify credit source \u2014 correction memo, overpayment, recoupment, or misapplied","Trace through billing system action codes and batch notes","Locate correction memo in shared drive (if applicable)","Decision: roll credit to open invoice OR process refund","Key adjustment in billing system with detailed batch note","Submit to AR Supervisor if transfer form required"],
+        impact: "Resolves credit balance. May require AR Supervisor approval.", sla: "Varies" },
+      { id: "PW-03", label: "3rd-Party Portal Credit Resolution", color: "#FDCB6E",
+        trigger: "Credit on facility billed through 3rd-party billing portal \u2014 branching based on correction timing vs. invoice approval",
+        steps: ["Determine if correction was BEFORE or AFTER invoice approval in the billing portal","IF before approval \u2192 Write-on (facility uses credit in portal)","IF after approval \u2192 Refund required (invoice locked, credit invisible to facility)","Key adjustment in billing system using appropriate action code","If portal credit entry needed \u2192 enter via portal marketplace with invoice reference","Verify credit total matches correction memo (may differ slightly due to portal pricing)"],
+        impact: "Two distinct paths. Wrong path = double payment or missing refund.", sla: "Varies" },
+      { id: "PW-04", label: "Payment Processing (Gateway)", color: "#E17055",
+        trigger: "Customer provides CC or ACH payment info via phone/email",
+        steps: ["Look up customer in billing system for Customer ID","Open payment gateway via internal portal","Enter Customer ID, search account","Navigate to payment entry \u2192 enter CC or ACH info","Constraints: $5K/txn cap, max 3 txns/day, each must be a different amount","If >$10K \u2192 split across transactions (max 3) OR route to cash department","Send receipt to customer email, include invoice details in memo"],
+        impact: "Hard constraints on transaction size/frequency. Overflow = manual routing.", sla: "Same-day processing" },
+      { id: "PW-05", label: "Payment Research (Remittance)", color: "#0984E3",
+        trigger: "Payment discrepancy \u2014 need to trace check/EFT origin",
+        steps: ["Get check/EFT number from billing system payment detail","Open remittance research tool \u2192 payment search","Select all provider entities, enter check number","Set retention period (start 90 days, extend to 5 years if needed)","Click each result to locate matching payment amount","Verify batch number matches between customer payor and primary payor"],
+        impact: "Resolves misapplied payments and payor code discrepancies.", sla: "Research-dependent" },
+      { id: "PW-06", label: "Email Domain Approval", color: "#636E72",
+        trigger: "Customer email domain blocked by corporate security policy",
+        steps: ["Check approved domain list on internal portal","If not approved \u2192 complete external email request form","Submit to Regional Manager for approval","Once approved \u2192 send test email to verify delivery","On confirmation reply \u2192 resume all held email outreach","Track pending requests \u2014 invoices must be sent once domain clears"],
+        impact: "BLOCKS all email outreach until resolved. Critical path for collections.", sla: "Depends on Regional Manager" },
+      { id: "PW-07", label: "Tax Exempt Update", color: "#A29BFE",
+        trigger: "Facility notifies provider of tax-exempt status",
+        steps: ["Request tax-exempt certification letter from state","Email billing supervisor with account #, facility name, cert letter","CC quality control, intake, and ops coordinators","Billing reviews invoices for retroactive adjustments","Credits generated from tax adjustments flow into credit resolution"],
+        impact: "May generate retroactive credits requiring resolution.", sla: "Billing department timeline" }
+    ];
+
+    const MAJOR_EVENTS = [
+      { id: "ME-01", label: "CHOW (Change of Ownership)", color: "#D63031",
+        description: "A facility changes hands \u2014 old owner's AR must be split from new owner's. Triggers a 6-phase cross-departmental workflow.",
+        phases: ["Phase 1 \u2014 LTC Team: Receive CHOW documentation, review backup docs, notify Operations and Sales, forward to Quality Control","Phase 2 \u2014 Quality Control: Confirm receipt, notify Sales/Ops/Billing, confirm retention status, create new account in customer master with interim pricing","Phase 3 \u2014 Division Manager: Add facility to recontract and pricing trackers with all required data fields","Phase 4 \u2014 Ops Manager: Update operations setup tracker (CHOW tab) with old/new details","Phase 5 \u2014 Billing: AR split between old and new owners by divestiture date. Manual invoice reconstruction. AR entry one month per day. Email invoices to correct contact. Adjust old account.","Phase 6 \u2014 Collections Follow-Up: Confirm customer received updated invoices. Request payment on delinquent invoices. Route disputes."] },
+      { id: "ME-02", label: "Termination & Closure", color: "#E17055",
+        description: "Contract terminated, equipment to be recovered, account to be financially closed out.",
+        phases: ["Phase 1 \u2014 Verification: Confirm termination with written documentation. Notify all departments. Flag for no further billing.","Phase 2 \u2014 Financial Review: Update closure tracker. Review AR, pending claims, needed adjustments.","Phase 3 \u2014 Vendor Coordination: Add to termination tracker. Notify vendors of termination date. Ensure no post-termination invoices.","Phase 4 \u2014 Closeout: Inventory audit, equipment counts, loss-of-use charges, vendor confirmations, Quality Control finalizes closure, Collections confirms all charges posted and account financially closed."] },
+      { id: "ME-03", label: "Bankruptcy / Receivership", color: "#6C5CE7",
+        description: "Legal protection filing \u2014 immediately freezes pre-petition AR and restricts all collection activity.",
+        phases: ["Phase 1 \u2014 Legal Notice: Regional office receives notice, confirms start date, forwards to corporate leadership","Phase 2 \u2014 System Updates: Enter dates in billing system account notes. Assign to designated coordinator. Stop pre-petition billing.","Phase 3 \u2014 AR Segregation: Separate pre-petition (FROZEN) vs post-petition (collectible). Escalate questionable dates.","Phase 4 \u2014 Legal Department: Legal reviews filing type, restrictions, required responses. Collections follows all guidance.","Phase 5 \u2014 Internal Alignment: Quality Control notifies all departments. Ops stops equipment retrieval. Ensure no activity violates bankruptcy law."] }
+    ];
+
+    const ESCALATION_RULES = [
+      { day: "Day 0", gate: "Initial Outreach", color: "#27AE60", task: "CALL_OUTBOUND + EMAIL_COLLECTION", assignee: "Coordinator", notify: "None (standard)" },
+      { day: "Day 15", gate: "Delinquency 1", color: "#F2C94C", task: "EMAIL_NOTICE (Letter #1) + CALL (15-day script)", assignee: "Coordinator", notify: "Coordinator reminder" },
+      { day: "Day 30", gate: "Delinquency 2", color: "#F2994A", task: "EMAIL_NOTICE (Letter #2) + CALL (30-day script)", assignee: "Coordinator", notify: "Coordinator + Supervisor" },
+      { day: "Day 45", gate: "Supervisor", color: "#EB5757", task: "Escalation to Supervisor with full history", assignee: "LTC Supervisor", notify: "Supervisor + Coordinator handoff" },
+      { day: "Day 45+", gate: "Ops Escalation", color: "#C0392B", task: "Escalation to Operations (1 attempt)", assignee: "Ops Manager", notify: "Ops + Supervisor" },
+      { day: "Day 52+", gate: "Suspension", color: "#8E44AD", task: "ACCOUNT_SUSPENDED + Suspension Notice", assignee: "Ops + Supervisor", notify: "Management" },
+      { day: "Day 66+", gate: "Cure Expired", color: "#922B21", task: "Dunning Notice + termination recommendation", assignee: "Regional Ops Mgr", notify: "Regional Ops approval required" },
+      { day: "Day 90+", gate: "Termination", color: "#2C3E50", task: "ACCOUNT_TERMINATED + equipment pickup", assignee: "Regional Ops Mgr", notify: "All stakeholders" },
+    ];
+
+    function Tag({ text, bg, fg }) {
+      return React.createElement("span", { style: { background: bg || "rgba(99,179,237,0.12)", color: fg || "#93c5fd", fontSize: 10, padding: "3px 9px", borderRadius: 5, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", display: "inline-block" }}, text);
+    }
+
+    function InfoCard({ title, color, children }) {
+      return React.createElement("div", { style: { background: (color || "#63b3ed") + "08", borderRadius: 10, padding: 16, border: "1px solid " + (color || "#63b3ed") + "18" }},
+        React.createElement("div", { style: { fontSize: 10, color: color || "#63b3ed", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 10, fontFamily: "'JetBrains Mono', monospace" }}, title), children);
+    }
+
+    function App() {
+      const [selectedStage, setSelectedStage] = useState(null);
+      const [selectedParallel, setSelectedParallel] = useState(null);
+      const [selectedEvent, setSelectedEvent] = useState(null);
+      const [view, setView] = useState("lifecycle");
+      const [showEscalation, setShowEscalation] = useState(false);
+      const closeAll = useCallback(() => { setSelectedStage(null); setSelectedParallel(null); setSelectedEvent(null); }, []);
+
+      return React.createElement("div", { style: { minHeight: "100vh", background: "linear-gradient(160deg, #0a0e17 0%, #111827 40%, #0d1321 100%)", color: "#e2e8f0", fontFamily: "'Inter', sans-serif", padding: "28px 32px" }},
+
+        // Header
+        React.createElement("div", { style: { marginBottom: 28, borderBottom: "1px solid rgba(99,179,237,0.15)", paddingBottom: 18 }},
+          React.createElement("div", { style: { display: "flex", alignItems: "baseline", gap: 14, flexWrap: "wrap" }},
+            React.createElement("h1", { style: { fontSize: 26, fontWeight: 700, margin: 0, background: "linear-gradient(90deg, #63b3ed, #4fd1c5)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}, "LTC Collections Process Map"),
+            React.createElement("span", { style: { fontSize: 12, color: "#475569", fontWeight: 500, fontFamily: "'JetBrains Mono', monospace" }}, "Workflow Orchestration Spec")),
+          React.createElement("p", { style: { fontSize: 13, color: "#64748b", margin: "8px 0 0", lineHeight: 1.5 }}, "Interactive workflow visualization \u2014 click any node to drill into stage detail, task types, systems, and required fields.")),
+
+        // Nav
+        React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 24, flexWrap: "wrap" }},
+          [{ key: "lifecycle", label: "Core Lifecycle", count: "10 stages", icon: "\u2192" },{ key: "parallel", label: "Parallel Workflows", count: "7 workflows", icon: "\u2442" },{ key: "events", label: "Major Events", count: "3 event types", icon: "\u26a1" }].map(tab =>
+            React.createElement("button", { key: tab.key, onClick: () => { setView(tab.key); closeAll(); }, style: { padding: "10px 18px", borderRadius: 8, border: "1px solid", borderColor: view === tab.key ? "#63b3ed" : "rgba(99,179,237,0.12)", background: view === tab.key ? "rgba(99,179,237,0.1)" : "transparent", color: view === tab.key ? "#63b3ed" : "#64748b", cursor: "pointer", fontSize: 13, fontFamily: "'Inter', sans-serif", fontWeight: 600, transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8 }},
+              React.createElement("span", { style: { fontSize: 14 }}, tab.icon), tab.label,
+              React.createElement("span", { style: { opacity: 0.4, fontWeight: 400, fontSize: 11, fontFamily: "'JetBrains Mono', monospace" }}, tab.count)))),
+
+        // LIFECYCLE
+        view === "lifecycle" && React.createElement("div", null,
+          React.createElement("div", { style: { overflowX: "auto", paddingBottom: 20, marginBottom: 8 }},
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 0, minWidth: "fit-content", padding: "24px 16px 16px" }},
+              LIFECYCLE_STAGES.map((stage, i) => {
+                const isSel = selectedStage && selectedStage.id === stage.id;
+                return React.createElement("div", { key: stage.id, style: { display: "flex", alignItems: "center" }},
+                  React.createElement("div", { className: "node-hover", onClick: () => setSelectedStage(prev => prev && prev.id === stage.id ? null : stage), style: { width: 116, minHeight: 104, borderRadius: 12, background: isSel ? "linear-gradient(135deg, "+stage.color+"25, "+stage.color+"10)" : "rgba(15,23,42,0.85)", border: "2px solid "+(isSel ? stage.color : stage.color+"40"), cursor: "pointer", padding: "12px 8px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, transition: "all 0.25s ease", boxShadow: isSel ? "0 0 28px "+stage.color+"25, 0 4px 16px rgba(0,0,0,0.3)" : "0 2px 10px rgba(0,0,0,0.3)", transform: isSel ? "scale(1.08)" : "scale(1)", position: "relative", flexShrink: 0 }},
+                    React.createElement("div", { style: { position: "absolute", top: -9, left: -5, background: stage.color, color: "#fff", fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}, stage.id),
+                    stage.day && React.createElement("div", { style: { fontSize: 10, color: stage.color, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, stage.day),
+                    React.createElement("div", { style: { fontSize: 11, fontWeight: 700, color: "#e2e8f0", textAlign: "center", lineHeight: 1.35, whiteSpace: "pre-line" }}, stage.label),
+                    React.createElement("div", { style: { width: 6, height: 6, borderRadius: "50%", background: stage.color, opacity: isSel ? 1 : 0.35 }})),
+                  i < LIFECYCLE_STAGES.length - 1 && React.createElement("div", { style: { display: "flex", alignItems: "center", padding: "0 2px", flexShrink: 0 }},
+                    React.createElement("div", { style: { width: 28, height: 2, background: "linear-gradient(90deg, "+stage.color+"50, "+LIFECYCLE_STAGES[i+1].color+"50)" }}),
+                    React.createElement("div", { style: { width: 0, height: 0, borderTop: "5px solid transparent", borderBottom: "5px solid transparent", borderLeft: "7px solid "+LIFECYCLE_STAGES[i+1].color+"70" }})));
+              })),
+            React.createElement("div", { style: { textAlign: "center", fontSize: 11, color: "#4fd1c5", opacity: 0.6, fontStyle: "italic", marginTop: -4 }}, "\u2191 Payment received at any stage \u2192 RESOLVED (LS-10)")),
+
+          // Escalation
+          React.createElement("div", { style: { marginBottom: 20 }},
+            React.createElement("button", { onClick: () => setShowEscalation(!showEscalation), style: { background: showEscalation ? "rgba(99,179,237,0.08)" : "transparent", border: "1px solid rgba(99,179,237,0.15)", color: "#63b3ed", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}, (showEscalation ? "\u25be" : "\u25b8") + " Escalation Engine Rules (" + ESCALATION_RULES.length + " gates)"),
+            showEscalation && React.createElement("div", { style: { marginTop: 12, background: "rgba(15,23,42,0.6)", border: "1px solid rgba(99,179,237,0.1)", borderRadius: 10, padding: 16, animation: "fadeIn 0.3s ease" }},
+              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 0, marginBottom: 16, overflowX: "auto" }},
+                ESCALATION_RULES.map((r, i) => React.createElement("div", { key: i, style: { flex: 1, height: 8, background: r.color+"50", borderRadius: i===0?"4px 0 0 4px":i===ESCALATION_RULES.length-1?"0 4px 4px 0":0, position: "relative", minWidth: 60 }},
+                  React.createElement("span", { style: { position: "absolute", top: 12, left: 0, fontSize: 9, color: r.color, fontWeight: 600, whiteSpace: "nowrap", fontFamily: "'JetBrains Mono', monospace" }}, r.day)))),
+              React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 28 }},
+                ESCALATION_RULES.map((r, i) => React.createElement("div", { key: i, style: { display: "grid", gridTemplateColumns: "80px 130px 1fr 130px 170px", gap: 8, padding: "8px 10px", borderRadius: 6, background: i%2===0?"rgba(99,179,237,0.03)":"transparent", fontSize: 11, alignItems: "center" }},
+                  React.createElement("span", { style: { color: r.color, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}, r.day),
+                  React.createElement("span", { style: { color: "#cbd5e1", fontWeight: 600 }}, r.gate),
+                  React.createElement("span", { style: { color: "#94a3b8" }}, r.task),
+                  React.createElement("span", { style: { color: "#5eead4", fontSize: 10 }}, r.assignee),
+                  React.createElement("span", { style: { color: "#64748b", fontSize: 10 }}, r.notify)))))),
+
+          // Stage detail
+          selectedStage && React.createElement("div", { style: { background: "rgba(10,14,23,0.95)", border: "1px solid "+selectedStage.color+"35", borderRadius: 14, padding: 24, marginBottom: 20, animation: "fadeIn 0.3s ease" }},
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18, flexWrap: "wrap", gap: 10 }},
+              React.createElement("div", null,
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }},
+                  React.createElement("span", { style: { background: selectedStage.color, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 5, fontFamily: "'JetBrains Mono', monospace" }}, selectedStage.id),
+                  React.createElement("h2", { style: { margin: 0, fontSize: 20, fontWeight: 700, color: selectedStage.color }}, selectedStage.shortLabel),
+                  selectedStage.day && React.createElement("span", { style: { fontSize: 12, color: "#64748b", fontFamily: "'JetBrains Mono', monospace" }}, selectedStage.day)),
+                React.createElement("p", { style: { margin: "10px 0 0", fontSize: 13, color: "#94a3b8", lineHeight: 1.6, maxWidth: 720 }}, selectedStage.description)),
+              React.createElement("button", { onClick: closeAll, style: { background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)", color: "#94a3b8", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}, "\u2715 Close")),
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }},
+              React.createElement(InfoCard, { title: "Entry / Exit", color: "#63b3ed" },
+                React.createElement("div", { style: { fontSize: 12, color: "#cbd5e1", marginBottom: 8, lineHeight: 1.5 }}, React.createElement("span", { style: { color: "#4fd1c5", fontWeight: 700 }}, "IN \u2192 "), selectedStage.entryTrigger),
+                React.createElement("div", { style: { fontSize: 12, color: "#cbd5e1", lineHeight: 1.5 }}, React.createElement("span", { style: { color: "#f97316", fontWeight: 700 }}, "OUT \u2192 "), selectedStage.exitCriteria)),
+              React.createElement(InfoCard, { title: "Systems Touched", color: "#63b3ed" },
+                React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5 }}, selectedStage.systems.map(s => React.createElement(Tag, { key: s, text: s })))),
+              React.createElement(InfoCard, { title: "Task Types", color: "#63b3ed" },
+                selectedStage.tasks.map((t, i) => React.createElement("div", { key: i, style: { fontSize: 12, color: "#cbd5e1", marginBottom: 6, paddingLeft: 10, borderLeft: "2px solid "+selectedStage.color+"40", lineHeight: 1.5 }}, t))),
+              React.createElement(InfoCard, { title: "Required Fields", color: "#4fd1c5" },
+                React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5 }}, selectedStage.fields.map(f => React.createElement(Tag, { key: f, text: f, bg: "rgba(79,209,197,0.1)", fg: "#5eead4" }))))))),
+
+        // PARALLEL
+        view === "parallel" && React.createElement("div", null,
+          React.createElement("p", { style: { fontSize: 13, color: "#64748b", margin: "0 0 16px", lineHeight: 1.5 }}, "These workflows branch off the core lifecycle at any stage and run in parallel. The account stays in its current collection stage while the parallel workflow executes."),
+          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }},
+            PARALLEL_WORKFLOWS.map(pw => {
+              const isSel = selectedParallel && selectedParallel.id === pw.id;
+              return React.createElement("div", { key: pw.id, className: "card-hover", onClick: () => setSelectedParallel(prev => prev && prev.id === pw.id ? null : pw), style: { background: isSel ? pw.color+"12" : "rgba(15,23,42,0.8)", border: "1px solid "+(isSel ? pw.color+"60" : pw.color+"20"), borderRadius: 12, padding: 16, cursor: "pointer", transition: "all 0.25s", boxShadow: isSel ? "0 0 24px "+pw.color+"18" : "0 2px 8px rgba(0,0,0,0.2)" }},
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }},
+                  React.createElement("span", { style: { background: pw.color, color: "#fff", fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}, pw.id)),
+                React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "#e2e8f0", lineHeight: 1.3 }}, pw.label),
+                React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}, pw.trigger.length > 70 ? pw.trigger.substring(0,70)+"\u2026" : pw.trigger),
+                React.createElement("div", { style: { fontSize: 10, color: "#475569", marginTop: 8, fontFamily: "'JetBrains Mono', monospace" }}, pw.steps.length+" steps \u00b7 SLA: "+pw.sla)); })),
+          selectedParallel && React.createElement("div", { style: { background: "rgba(10,14,23,0.95)", border: "1px solid "+selectedParallel.color+"35", borderRadius: 14, padding: 24, animation: "fadeIn 0.3s ease" }},
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18, flexWrap: "wrap", gap: 10 }},
+              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }},
+                React.createElement("span", { style: { background: selectedParallel.color, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 5, fontFamily: "'JetBrains Mono', monospace" }}, selectedParallel.id),
+                React.createElement("h2", { style: { margin: 0, fontSize: 20, fontWeight: 700, color: selectedParallel.color }}, selectedParallel.label)),
+              React.createElement("button", { onClick: closeAll, style: { background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)", color: "#94a3b8", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}, "\u2715 Close")),
+            React.createElement(InfoCard, { title: "Trigger", color: "#63b3ed" }, React.createElement("div", { style: { fontSize: 13, color: "#cbd5e1", lineHeight: 1.5 }}, selectedParallel.trigger)),
+            React.createElement("div", { style: { marginTop: 16, marginBottom: 16 }},
+              React.createElement("div", { style: { fontSize: 10, color: "#63b3ed", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 12, fontFamily: "'JetBrains Mono', monospace" }}, "Process Steps"),
+              React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 }},
+                selectedParallel.steps.map((step, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 12, alignItems: "flex-start", background: "rgba(15,23,42,0.5)", borderRadius: 8, padding: "12px 14px", borderLeft: "3px solid "+selectedParallel.color+"50", animation: "slideIn 0.3s ease "+(i*0.05)+"s both" }},
+                  React.createElement("span", { style: { background: selectedParallel.color+"25", color: selectedParallel.color, fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 5, flexShrink: 0, fontFamily: "'JetBrains Mono', monospace" }}, i+1),
+                  React.createElement("span", { style: { fontSize: 12, color: "#cbd5e1", lineHeight: 1.6 }}, step))))),
+            React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }},
+              React.createElement(InfoCard, { title: "Lifecycle Impact", color: "#f97316" }, React.createElement("div", { style: { fontSize: 12, color: "#fed7aa", lineHeight: 1.5 }}, selectedParallel.impact)),
+              React.createElement(InfoCard, { title: "SLA", color: "#4fd1c5" }, React.createElement("div", { style: { fontSize: 14, color: "#99f6e4", fontWeight: 700 }}, selectedParallel.sla))))),
+
+        // EVENTS
+        view === "events" && React.createElement("div", null,
+          React.createElement("p", { style: { fontSize: 13, color: "#64748b", margin: "0 0 16px", lineHeight: 1.5 }}, "Account-level events that change the fundamental status of an LTC relationship. These trigger multi-phase, cross-departmental processes."),
+          React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14, marginBottom: 20 }},
+            MAJOR_EVENTS.map(ev => {
+              const isSel = selectedEvent && selectedEvent.id === ev.id;
+              return React.createElement("div", { key: ev.id, className: "card-hover", onClick: () => setSelectedEvent(prev => prev && prev.id === ev.id ? null : ev), style: { background: isSel ? ev.color+"12" : "rgba(15,23,42,0.8)", border: "1px solid "+(isSel ? ev.color+"60" : ev.color+"20"), borderRadius: 12, padding: 18, cursor: "pointer", transition: "all 0.25s" }},
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }},
+                  React.createElement("span", { style: { background: ev.color, color: "#fff", fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, fontFamily: "'JetBrains Mono', monospace" }}, ev.id),
+                  React.createElement("span", { style: { fontSize: 9, color: "#f87171", fontWeight: 700, letterSpacing: 0.8, textTransform: "uppercase", fontFamily: "'JetBrains Mono', monospace" }}, "Account-Level Event")),
+                React.createElement("div", { style: { fontSize: 15, fontWeight: 700, color: "#e2e8f0" }}, ev.label),
+                React.createElement("div", { style: { fontSize: 11, color: "#64748b", marginTop: 8, lineHeight: 1.4 }}, ev.description.length > 90 ? ev.description.substring(0,90)+"\u2026" : ev.description),
+                React.createElement("div", { style: { fontSize: 10, color: "#475569", marginTop: 8, fontFamily: "'JetBrains Mono', monospace" }}, ev.phases.length+" phases")); })),
+          selectedEvent && React.createElement("div", { style: { background: "rgba(10,14,23,0.95)", border: "1px solid "+selectedEvent.color+"35", borderRadius: 14, padding: 24, animation: "fadeIn 0.3s ease" }},
+            React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 18, flexWrap: "wrap", gap: 10 }},
+              React.createElement("div", null,
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }},
+                  React.createElement("span", { style: { background: selectedEvent.color, color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 9px", borderRadius: 5, fontFamily: "'JetBrains Mono', monospace" }}, selectedEvent.id),
+                  React.createElement("h2", { style: { margin: 0, fontSize: 20, fontWeight: 700, color: selectedEvent.color }}, selectedEvent.label)),
+                React.createElement("p", { style: { margin: "10px 0 0", fontSize: 13, color: "#94a3b8", lineHeight: 1.6, maxWidth: 720 }}, selectedEvent.description)),
+              React.createElement("button", { onClick: closeAll, style: { background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.2)", color: "#94a3b8", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 12 }}, "\u2715 Close")),
+            React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 }},
+              selectedEvent.phases.map((phase, i) => React.createElement("div", { key: i, style: { display: "flex", gap: 14, alignItems: "flex-start", background: "rgba(15,23,42,0.5)", borderRadius: 10, padding: "14px 16px", borderLeft: "3px solid "+selectedEvent.color+(i===0?"cc":"60"), animation: "slideIn 0.3s ease "+(i*0.06)+"s both" }},
+                React.createElement("div", { style: { width: 30, height: 30, borderRadius: "50%", background: selectedEvent.color+"20", color: selectedEvent.color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, flexShrink: 0, fontFamily: "'JetBrains Mono', monospace" }}, i+1),
+                React.createElement("span", { style: { fontSize: 12, color: "#cbd5e1", lineHeight: 1.6 }}, phase)))))),
+
+        // Footer
+        React.createElement("div", { style: { marginTop: 28, padding: "14px 18px", background: "rgba(15,23,42,0.5)", border: "1px solid rgba(99,179,237,0.06)", borderRadius: 10 }},
+          React.createElement("div", { style: { fontSize: 9, color: "#334155", letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 8, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace" }}, "ID Reference"),
+          React.createElement("div", { style: { fontSize: 11, color: "#475569", lineHeight: 1.7 }},
+            React.createElement("span", { style: { color: "#94a3b8", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, "LS-##"), " Lifecycle Stage \u00b7 ",
+            React.createElement("span", { style: { color: "#94a3b8", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, "PW-##"), " Parallel Workflow \u00b7 ",
+            React.createElement("span", { style: { color: "#94a3b8", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, "ME-##"), " Major Event \u00b7 ",
+            React.createElement("span", { style: { color: "#94a3b8", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, "TT-*"), " Task Type \u00b7 ",
+            React.createElement("span", { style: { color: "#94a3b8", fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}, "ER-##"), " Escalation Rule")));
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>
